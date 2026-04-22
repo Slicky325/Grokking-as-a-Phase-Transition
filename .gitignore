@@ -1,0 +1,9 @@
+ref/
+
+.claude/
+.venv/
+.vscode/
+
+CLAUDE.md
+
+*.pyc
