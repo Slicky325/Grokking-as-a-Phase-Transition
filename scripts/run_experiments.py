@@ -21,10 +21,10 @@ from tqdm import tqdm
 # Workers inherit this via module re-import on spawn
 _PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 
-TASKS      = ['addition',  'division'] #'multi-task']
+TASKS      = ['addition']#,  'division', 'multi-task']
 SEEDS      = [42, 43, 44] # 45, 46]
-P_VALUES   = [53, 113]
-EPOCHS     = 40_000
+P_VALUES   = [113]
+EPOCHS     = 100_000
 LR         = 1e-3
 WD         = 1.0           # canonical value from progress-measures-paper
 # Full-batch GD: batch_size must exceed the largest training split.

@@ -1,5 +1,6 @@
 ref/
-results*/
+results-*/
+ssh-modal.py
 
 .claude/
 .venv/

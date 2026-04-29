@@ -42,6 +42,7 @@ def train_model(model, train_loader, test_loader, epochs=20_000, lr=1e-3,
             x, y = x.to(device), y.to(device)
             optimizer.zero_grad()
             criterion(model(x), y).backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             optimizer.step()
             scheduler.step()
 
