@@ -1,26 +1,45 @@
-import os
+"""
+Per-seed thermodynamic plots, plus free-energy decomposition and
+critical-exponent analysis (steps 4 and 5).
+
+Usage:
+    python scripts/plot_results.py                       # uses ../results
+    python scripts/plot_results.py --results results-1   # any results dir
+"""
+
+import argparse
 import glob
-import pandas as pd
+import os
+import sys
+
+# Ensure sibling scripts (free_energy.py, critical_exponent.py) resolve regardless
+# of which directory plot_results.py is launched from.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
 import matplotlib.pyplot as plt
-import seaborn as sns
 import numpy as np
+import pandas as pd
+import seaborn as sns
+
+import free_energy
+import critical_exponent
+import cross_seed_plots
+
 
 def plot_csv(csv_path, output_dir):
     """Plot a single CSV file and save the figure, using the filename as the label."""
     filename = os.path.basename(csv_path)
-    label = os.path.splitext(filename)[0]  # e.g. "addition_s42_p113"
+    label = os.path.splitext(filename)[0]
 
     print(f"Loading data from {csv_path}...")
     df = pd.read_csv(csv_path)
 
-    # Determine numeric columns to aggregate
     numeric_cols = [c for c in ['Train_Loss', 'Test_Loss', 'LLC', 'Order_Parameter'] if c in df.columns]
 
     if 'Epoch' not in df.columns:
         print(f"  Skipping {filename}: no 'Epoch' column found.")
         return
 
-    # If there are multiple seeds, aggregate; otherwise just use the data directly
     if 'Seed' in df.columns and df['Seed'].nunique() > 1:
         agg_df = df.groupby('Epoch')[numeric_cols].agg(['mean', 'std'])
         has_std = True
@@ -29,19 +48,15 @@ def plot_csv(csv_path, output_dir):
         has_std = False
 
     epochs = agg_df.index
-
     sns.set_theme(style="whitegrid")
-
     fig, axes = plt.subplots(3, 1, figsize=(10, 15), sharex=True)
     fig.suptitle(f'Thermodynamic Grokking Analysis: {label}', fontsize=16)
 
     def _get(col):
         if has_std:
             return agg_df[col]['mean'], agg_df[col]['std']
-        else:
-            return agg_df[col], None
+        return agg_df[col], None
 
-    # 1. Train and Test Loss
     ax = axes[0]
     for col, color in [('Train_Loss', 'blue'), ('Test_Loss', 'red')]:
         if col not in numeric_cols:
@@ -55,7 +70,6 @@ def plot_csv(csv_path, output_dir):
     ax.legend()
     ax.set_title('Learning Curves')
 
-    # 2. Local Learning Coefficient (LLC)
     ax = axes[1]
     if 'LLC' in numeric_cols:
         mean, std = _get('LLC')
@@ -66,7 +80,6 @@ def plot_csv(csv_path, output_dir):
     ax.legend()
     ax.set_title('Structural Complexity (Entropy Proxy)')
 
-    # 3. Order Parameter
     ax = axes[2]
     if 'Order_Parameter' in numeric_cols:
         mean, std = _get('Order_Parameter')
@@ -88,26 +101,54 @@ def plot_csv(csv_path, output_dir):
 
 
 def main():
-    # Setup paths
-    base_dir = os.path.join(os.path.dirname(__file__), '..')
-    results_dir = os.path.join(base_dir, 'results')
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--results", default=None,
+                        help="results dir (default: <repo>/results)")
+    parser.add_argument("--pattern", default="*_s*_p*.csv",
+                        help="glob for per-seed CSV files (default: '*_s*_p*.csv')")
+    parser.add_argument("--skip-free-energy", action="store_true",
+                        help="don't run free-energy analysis")
+    parser.add_argument("--skip-critical-exponent", action="store_true",
+                        help="don't run critical-exponent analysis")
+    parser.add_argument("--skip-cross-seed", action="store_true",
+                        help="don't run cross-seed aligned/phase plots")
+    parser.add_argument("--n-boot", type=int, default=1000,
+                        help="bootstrap samples for α CI (default 1000)")
+    args = parser.parse_args()
+
+    base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+    results_dir = args.results or os.path.join(base_dir, 'results')
     output_dir = os.path.join(results_dir, 'plots')
     os.makedirs(output_dir, exist_ok=True)
 
-    # Discover all CSV files in the results directory
-    csv_files = sorted(glob.glob(os.path.join(results_dir, '*.csv')))
+    # Per-seed CSVs only. Skips the aggregate `grokking_thermo_data.csv` —
+    # plotting an averaged-across-everything CSV doesn't say anything useful.
+    csv_files = sorted(glob.glob(os.path.join(results_dir, args.pattern)))
 
     if not csv_files:
-        print("No CSV files found in results/. Have you successfully run run_experiments.py?")
+        print(f"No CSVs match {args.pattern!r} in {results_dir}.")
         return
 
-    print(f"Found {len(csv_files)} CSV file(s):")
+    print(f"Found {len(csv_files)} per-seed CSV(s):")
     for f in csv_files:
         print(f"  - {os.path.basename(f)}")
     print()
 
     for csv_path in csv_files:
         plot_csv(csv_path, output_dir)
+
+    if not args.skip_cross_seed:
+        print("\n=== Cross-seed aligned + phase-portrait plots ===")
+        cross_seed_plots.run(results_dir, pattern=args.pattern)
+
+    if not args.skip_free_energy:
+        print("\n=== Free-energy decomposition ===")
+        free_energy.run(results_dir, pattern=args.pattern)
+
+    if not args.skip_critical_exponent:
+        print("\n=== Critical-exponent analysis ===")
+        critical_exponent.run(results_dir, pattern=args.pattern,
+                              n_boot=args.n_boot)
 
 
 if __name__ == "__main__":

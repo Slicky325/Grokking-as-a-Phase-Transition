@@ -21,15 +21,15 @@ from tqdm import tqdm
 # Workers inherit this via module re-import on spawn
 _PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 
-TASKS      = ['addition']#,  'division', 'multi-task']
-SEEDS      = [42, 43, 44] # 45, 46]
+TASKS      = ['addition', 'division']
+SEEDS      = [42, 43, 44, 45, 46]
 P_VALUES   = [113]
 EPOCHS     = 100_000
 LR         = 1e-3
 WD         = 1.0           # canonical value from progress-measures-paper
 # Full-batch GD: batch_size must exceed the largest training split.
-# P=113 multi-task training split ≈ 7628 → 10_000 covers all (P, task) combinations.
-BATCH_SIZE = 10_000
+# P=113 single-task training split ≈ 3.8k → 5_000 covers all (P, task) combinations.
+BATCH_SIZE = 5_000
 
 # Skip LLC for epochs below this — SGLD at epoch 1–200 is expensive and uninformative.
 LLC_MIN_EPOCH = 200
@@ -150,7 +150,11 @@ def main():
         return
 
     final = pd.concat(all_dfs, ignore_index=True)
-    cols = ['Task', 'Seed', 'P', 'Epoch', 'Train_Loss', 'Test_Loss', 'LLC', 'Order_Parameter']
+    cols = ['Task', 'Seed', 'P', 'Epoch',
+            'Train_Loss', 'Test_Loss',
+            'LLC', 'LLC_raw', 'LLC_std', 'LLC_cv',
+            'LLC_accepted', 'LLC_num_chains', 'LLC_num_draws',
+            'Order_Parameter']
     final = final[[c for c in cols if c in final.columns]]
     out_path = os.path.join(out_dir, 'grokking_thermo_data.csv')
     final.to_csv(out_path, index=False)

@@ -1,61 +1,77 @@
+import math
 import torch
-import torch.nn as nn
-try:
-    from devinterp.slt.sampler import estimate_learning_coeff as estimate_llc
-except ImportError:
-    from devinterp.slt import estimate_llc
 
-def compute_llc(model, dataloader, criterion, num_chains=5, num_draws=200):
+from devinterp.slt.sampler import estimate_learning_coeff_with_summary
+
+
+def compute_llc(model, dataloader, criterion,
+                num_chains=5, num_draws=200,
+                lr=1e-5, localization=500.0,
+                cv_threshold=0.5, reject_negative=True):
     """
-    Wrapper function to compute the Local Learning Coefficient (LLC) using SGLD.
+    Estimate the Local Learning Coefficient (LLC) via SGLD with chain diagnostics.
+
+    Returns a dict:
+        mean        : float — chain-averaged LLC (NaN if rejected)
+        mean_raw    : float — chain-averaged LLC before acceptance check
+        std         : float — std across chains
+        cv          : float — std / |mean|  (sampler-disagreement proxy)
+        per_chain   : list[float] — LLC value for each chain
+        accepted    : bool — True if estimate passed quality gates
+        num_chains  : int
+        num_draws   : int
+
+    Acceptance gates:
+        - mean >= 0  (negative LLC indicates SGLD instability, not signal)
+        - cv  <= cv_threshold  (chains disagree by < threshold * |mean|)
     """
     device = next(model.parameters()).device
-    
+
     def evaluate(mod, batch):
         x, y = batch
         x, y = x.to(device), y.to(device)
         return criterion(mod(x), y)
 
-    try:
-        llc = estimate_llc(
-            model=model,
-            loader=dataloader,
-            evaluate=evaluate,
-            optimizer_kwargs=dict(lr=1e-5, localization=500.0),
-            num_chains=num_chains,
-            num_draws=num_draws,
-            device=device,
-            verbose=False,
-        )
-    except TypeError:
-        # Fallback if the signature relies on criterion directly
-        llc = estimate_llc(
-            model=model,
-            loader=dataloader,
-            criterion=criterion,
-            optimizer_kwargs=dict(lr=1e-5, localization=500.0),
-            num_chains=num_chains,
-            num_draws=num_draws,
-            device=device,
-            verbose=False,
-        )
-    return llc
+    res = estimate_learning_coeff_with_summary(
+        model=model,
+        loader=dataloader,
+        evaluate=evaluate,
+        optimizer_kwargs=dict(lr=lr, localization=localization),
+        num_chains=num_chains,
+        num_draws=num_draws,
+        device=device,
+        verbose=False,
+    )
+
+    mean_raw = float(res["llc/mean"])
+    std = float(res["llc/std"])
+    per_chain = [float(res[f"llc-chain/{i}"]) for i in range(num_chains)]
+    cv = std / abs(mean_raw) if abs(mean_raw) > 1e-9 else float("inf")
+
+    accepted = True
+    if reject_negative and mean_raw < 0:
+        accepted = False
+    if cv > cv_threshold:
+        accepted = False
+
+    return {
+        "mean": mean_raw if accepted else float("nan"),
+        "mean_raw": mean_raw,
+        "std": std,
+        "cv": cv,
+        "per_chain": per_chain,
+        "accepted": accepted,
+        "num_chains": num_chains,
+        "num_draws": num_draws,
+    }
+
 
 def compute_order_parameter(model, P=53):
     """
-    Measures how strongly the embedding matrix has developed 'clock' (Fourier)
-    structure at any single dominant frequency.
+    Fourier-power concentration index on the embedding matrix.
 
-    Method (matching ref/devinterp/modular_addition/dynamics.py::get_magnitude_modes):
-      1. Compute the real DFT of W_E (shape P × d_model) along the token axis
-         using explicit cosine/sine matrices — same as the reference codebase.
-      2. Collect the magnitude of each frequency k across all embedding dims.
-      3. Return the fraction of total Fourier POWER concentrated at the single
-         most-energetic positive frequency (Herfindahl-style concentration index).
-
-    Behaviour:
-      - Random / pizza init:  ~1/(P//2) ≈ 0.04  (energy spread uniformly)
-      - Grokked / clock:      → 0.3–0.9          (one key frequency dominates)
+    Random / pizza init: ~ 1 / (P//2)   (energy uniform across modes)
+    Grokked / clock:     0.3 – 0.9       (one frequency dominates)
     """
     try:
         W = model.embedding.weight[:P, :].detach().float()
@@ -64,18 +80,13 @@ def compute_order_parameter(model, P=53):
 
     device = W.device
     n = torch.arange(P, dtype=torch.float32, device=device)
-    k = n.unsqueeze(1)                                      # (P, 1)
-    cos_mat = torch.cos(2 * torch.pi * k * n / P)          # (P, P)
-    sin_mat = torch.sin(2 * torch.pi * k * n / P)          # (P, P)
+    k = n.unsqueeze(1)
+    cos_mat = torch.cos(2 * torch.pi * k * n / P)
+    sin_mat = torch.sin(2 * torch.pi * k * n / P)
 
-    c = cos_mat @ W                                         # (P, d_model)
-    s = sin_mat @ W                                         # (P, d_model)
-    mode_power = (c ** 2 + s ** 2).sum(dim=-1)             # (P,)  squared magnitude per freq
+    c = cos_mat @ W
+    s = sin_mat @ W
+    mode_power = (c ** 2 + s ** 2).sum(dim=-1)
 
-    # Positive frequencies only: k = 1 … P//2  (exclude DC k=0 and symmetric half)
-    pos_power = mode_power[1 : P // 2 + 1]                 # (P//2,)
-
-    # Concentration index: power at dominant freq / total positive-freq power
-    # Bounded in [1/(P//2), 1]; increases monotonically as grokking sharpens one freq
-    M = (pos_power.max() / pos_power.sum()).item()
-    return M
+    pos_power = mode_power[1 : P // 2 + 1]
+    return (pos_power.max() / pos_power.sum()).item()
